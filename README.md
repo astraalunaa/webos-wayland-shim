@@ -3,6 +3,11 @@
 A small nested Wayland compositor that lets modern Linux GUI applications run
 natively on LG webOS TVs.
 
+> **AI-assisted project:** This repository and its documentation were created
+> with the help of an AI coding assistant (DeepSeek V4.1 Flash via OpenCode)
+> and were tested on the author's rooted TV. Read the code and the rooting
+> notes before running anything on your own hardware.
+
 webOS's surface manager exposes `wl_shell` and `wl_webos_shell`, but **not**
 `xdg_wm_base`. Current GTK, Qt, SDL and Electron applications expect
 `xdg_wm_base`, so without a translation layer they cannot create a window at
@@ -50,57 +55,128 @@ software rendering are not. Close other TV apps when running something heavy.
 
 ## Requirements
 
-- A rooted TV with root SSH access.
+- A rooted TV with root SSH access. See [step 0](#0-root-the-tv-and-enable-ssh).
 - An ext4-formatted USB drive with enough free space.
 - An Alpine `minirootfs` for the TV's architecture. Most rooted LG TVs of this
   generation are `armv7l`; newer ones may be `aarch64`. Check with `uname -m`.
 - The TV compositor's Wayland socket. On the tested TV it is
   `/tmp/xdg/wayland-0`.
 
+## 0. Root the TV and enable SSH
+
+Rooting methods depend on the exact model and firmware. Do not update the TV
+first: a firmware update can remove the exploit. The short version:
+
+1. **Find the model number.** It is on the label on the back of the TV.
+2. **Check support.** Enter the model number at
+   <https://cani.rootmy.tv>. That site tells you whether the model is
+   supported and which rooting method/tool applies.
+3. **Check the firmware version.** On the TV, open
+   **Settings → All Settings → Support → Software Update** and note the
+   software version. Compare it with the versions supported by the rooting
+   tool. If your version is not listed as supported, stop here; do not attempt
+   the root.
+4. **Disable automatic updates.** In the same update settings, turn off
+   **Auto Update** (tick it off). A later firmware update can break the root
+   and the `/tmp/xdg` Wayland setup this project relies on.
+5. **Root the TV.** Follow the instructions provided by the rooting tool for
+   your exact model and firmware. Reboot the TV when the tool tells you to.
+6. **Enable SSH.** Open the **Homebrew Channel** app, find its settings, and
+   enable **SSH**. Reboot the TV.
+7. **Connect and check the architecture.**
+
+   ```sh
+   ssh root@<TV_IP>
+   # default password on many webOS root setups:
+   # alpine
+   uname -m
+   ```
+
+   Typical results:
+
+   - `armv7l` → use Alpine's `armv7` minirootfs
+   - `aarch64` → use Alpine's `aarch64` minirootfs
+
+   Change the default root password with `passwd` if you have not already.
+
 ## 1. Put Alpine on the USB drive
 
-On a Linux workstation:
+Use the architecture from `uname -m` in step 0. On a Linux workstation:
+
+1. Open <https://alpinelinux.org/downloads/>, scroll down to
+   **Mini Root Filesystem**, and download the build for your architecture.
+   For example, `armv7l` uses the `armv7` minirootfs and `aarch64` uses the
+   `aarch64` one.
+2. Format the USB partition as **ext4** with your favourite partition manager
+   (GParted, `fdisk` + `mkfs.ext4`, etc.).
+3. Mount the partition and extract the minirootfs as root. Preserve
+   permissions and ownership with `-p`.
 
 ```sh
-# Choose the correct architecture: armv7, aarch64, ...
-wget https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/armv7/alpine-minirootfs-3.24.4-armv7.tar.gz
+# Example: adjust ARCH and the version to the download you picked.
+ARCH=armv7              # uname -m showed armv7l -> use armv7
+VER=3.24.4
+wget "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/$ARCH/alpine-minirootfs-$VER-$ARCH.tar.gz"
 
 # Destructive: this erases the partition.
 sudo mkfs.ext4 -L alpine /dev/sdX1
-sudo mkdir -p /mnt/usb
-sudo mount /dev/sdX1 /mnt/usb
+sudo mount /dev/sdX1 /mnt
 
-# Extract as root and preserve permissions/ownership.
-sudo tar -xpf alpine-minirootfs-3.24.4-armv7.tar.gz -C /mnt/usb
+# Extract as root. Do not drop the -p flag.
+sudo tar -xpf "alpine-minirootfs-$VER-$ARCH.tar.gz" -C /mnt
 
-sudo umount /mnt/usb
+# Put this repository inside the chroot so it is available after boot.
+sudo cp -a webos-wayland-shim /mnt/root/
+
+# If you use a separate TV-side post-mount script (for example one that
+# exports XDG_RUNTIME_DIR and WAYLAND_DISPLAY), copy it here too, or merge
+# those two exports into scripts/start-alpine.sh.
+
+sync
+sudo umount /mnt
 ```
 
-If the USB drive is already ext4 and contains an Alpine rootfs, just extract
-the tarball over it. Do not use `tar -xf` without `-p`; device nodes, setuid
-bits and ownership matter.
+If the USB drive already contains an Alpine rootfs, you can extract/copy over
+it instead of formatting. Device nodes, setuid bits and ownership matter, so
+always extract as root with `-p`.
+
+Unplug the USB from the workstation and plug it into the TV. **If the TV asks
+to format the USB, do not format it** — that would erase Alpine.
 
 ## 2. Mount it and enter the chroot on the TV
 
-Copy the repository to the TV. One way is to put it inside the Alpine rootfs:
+The repository is already inside the USB rootfs at
+`/root/webos-wayland-shim`. Copy only the host-side start script to the TV,
+because the script has to run **outside** the chroot and before the USB is
+mounted at `/tmp/alpine`.
+
+On the workstation:
 
 ```sh
-scp -r webos-wayland-shim root@<tv-ip>:/tmp/alpine/root/
+scp webos-wayland-shim/scripts/start-alpine.sh root@<TV_IP>:/home/root/
 ```
 
-Then, **on the TV outside the chroot**, run the mount helper. It mounts the
-USB partition, `/dev`, `/proc`, `/sys`, the host runtime directory, repairs
-loopback-only DNS, and enters the chroot:
+Then, over SSH on the TV:
 
 ```sh
-/tmp/alpine/root/webos-wayland-shim/scripts/start-alpine.sh
+chmod +x /home/root/start-alpine.sh
+/home/root/start-alpine.sh
 ```
 
-Override paths if your setup differs:
+The helper mounts the USB partition at `/tmp/alpine`, mounts `/dev`, `/proc`,
+`/sys`, the host runtime directory, repairs loopback-only DNS, and enters the
+chroot. If the USB device is not `/dev/sda1`:
 
 ```sh
-USB_DEV=/dev/sdb1 ALPINE_ROOT=/mnt/usb \
-  ./scripts/start-alpine.sh
+USB_DEV=/dev/sdb1 /home/root/start-alpine.sh
+```
+
+If your TV auto-mounted the USB somewhere else and the helper cannot mount
+`/tmp/alpine`, unmount the auto-mount first or set `ALPINE_ROOT`/`USB_DEV`
+explicitly:
+
+```sh
+USB_DEV=/dev/sdb1 ALPINE_ROOT=/tmp/alpine /home/root/start-alpine.sh
 ```
 
 What the script does, if you prefer to do it manually:
