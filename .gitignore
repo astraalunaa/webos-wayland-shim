@@ -1,0 +1,7 @@
+shim
+build/
+*.o
+protocol/xdg-shell-server-protocol.h
+protocol/xdg-shell-protocol.c
+protocol/webos-shell-client-protocol.h
+protocol/webos-shell-protocol.c
